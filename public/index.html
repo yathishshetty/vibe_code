@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Minimal Secure Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Minimal Secure Chat</h1>
+      <p id="status" class="status">Initializing…</p>
+
+      <section id="createSection">
+        <button id="createBtn" type="button">Create Secure Session</button>
+      </section>
+
+      <section id="inviteSection" class="hidden">
+        <label for="inviteUrl">One-time invite link</label>
+        <input id="inviteUrl" readonly />
+      </section>
+
+      <section id="verifySection" class="hidden">
+        <p>Compare this security code out-of-band with your peer before sending messages:</p>
+        <p id="safetyCode" class="code">----</p>
+        <button id="confirmCodeBtn" type="button">Codes match: Confirm</button>
+      </section>
+
+      <section id="chatSection" class="hidden">
+        <div id="messages" aria-live="polite"></div>
+        <form id="chatForm" autocomplete="off">
+          <input id="messageInput" maxlength="2048" placeholder="Encrypted message" required />
+          <button id="sendBtn" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
