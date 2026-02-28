@@ -6,7 +6,7 @@ const state = {
   myStaticPublicBytes: null,
   peerStaticPublicKey: null,
   peerStaticPublicBytes: null,
-  rootKeyBytes: null,
+  rootKey: null,
   sendCounter: 0,
   recvCounter: 0,
   rekeyTimer: null,
@@ -80,8 +80,8 @@ async function importPeerPublic(rawBytes) {
 async function deriveRootFromECDH(myPrivateKey, peerPublicKey, saltBytes) {
   // ECDH -> HKDF -> AES key derivation (NIST-compatible primitives only).
   const sharedBits = await crypto.subtle.deriveBits({ name: 'X25519', public: peerPublicKey }, myPrivateKey, 256);
-  const ikm = await crypto.subtle.importKey('raw', sharedBits, 'HKDF', false, ['deriveBits']);
-  const rootBits = await crypto.subtle.deriveBits(
+  const ikm = await crypto.subtle.importKey('raw', sharedBits, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
     {
       name: 'HKDF',
       hash: 'SHA-256',
@@ -89,18 +89,19 @@ async function deriveRootFromECDH(myPrivateKey, peerPublicKey, saltBytes) {
       info: new TextEncoder().encode('minimal-secure-chat/root-v1')
     },
     ikm,
-    256
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
   );
-
-  return new Uint8Array(rootBits);
 }
 
-async function deriveMessageKey(counter, senderSlot) {
-  const hkdfKey = await crypto.subtle.importKey('raw', state.rootKeyBytes, 'HKDF', false, ['deriveKey']);
+async function deriveMessageKey(counter, direction) {
+  const rootBytes = await crypto.subtle.exportKey('raw', state.rootKey);
+  const hkdfKey = await crypto.subtle.importKey('raw', rootBytes, 'HKDF', false, ['deriveKey']);
   const salt = new Uint8Array(16);
   const view = new DataView(salt.buffer);
   view.setUint32(0, counter, false);
-  view.setUint8(4, senderSlot);
+  view.setUint8(4, direction === 'send' ? 1 : 2);
   return crypto.subtle.deriveKey(
     {
       name: 'HKDF',
@@ -163,10 +164,10 @@ function maybeEnableChat() {
 }
 
 async function sendEncrypted(plaintext) {
-  if (!state.rootKeyBytes || !state.verified) throw new Error('Verified key not established');
+  if (!state.rootKey || !state.verified) throw new Error('Verified key not established');
 
   state.sendCounter += 1;
-  const key = await deriveMessageKey(state.sendCounter, state.slot);
+  const key = await deriveMessageKey(state.sendCounter, 'send');
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const aad = new TextEncoder().encode(`c:${state.sendCounter}`);
   const ciphertext = await crypto.subtle.encrypt(
@@ -184,12 +185,11 @@ async function sendEncrypted(plaintext) {
 }
 
 async function decryptIncoming(counter, ivB64, dataB64) {
-  if (!state.rootKeyBytes || !state.verified) throw new Error('Verified key not established');
+  if (!state.rootKey || !state.verified) throw new Error('Verified key not established');
   if (!Number.isInteger(counter) || counter <= state.recvCounter) {
     throw new Error('Replay or invalid counter');
   }
-  const peerSlot = state.slot === 1 ? 2 : 1;
-  const key = await deriveMessageKey(counter, peerSlot);
+  const key = await deriveMessageKey(counter, 'recv');
   const iv = b64ToBytes(ivB64);
   const data = b64ToBytes(dataB64);
   const aad = new TextEncoder().encode(`c:${counter}`);
@@ -214,7 +214,7 @@ async function establishInitialKey(peerPubB64) {
   state.peerStaticPublicBytes = b64ToBytes(peerPubB64);
   state.peerStaticPublicKey = await importPeerPublic(state.peerStaticPublicBytes);
   const zeroSalt = new Uint8Array(32);
-  state.rootKeyBytes = await deriveRootFromECDH(state.myStaticKeyPair.privateKey, state.peerStaticPublicKey, zeroSalt);
+  state.rootKey = await deriveRootFromECDH(state.myStaticKeyPair.privateKey, state.peerStaticPublicKey, zeroSalt);
   state.sendCounter = 0;
   state.recvCounter = 0;
   resetVerificationState();
@@ -256,7 +256,7 @@ async function handleRekeyOffer(msg) {
   state.myStaticKeyPair = answerPair;
   state.myStaticPublicBytes = answerPub;
   state.peerStaticPublicBytes = peerOfferPubBytes;
-  state.rootKeyBytes = nextRoot;
+  state.rootKey = nextRoot;
   state.sendCounter = 0;
   state.recvCounter = 0;
   resetVerificationState();
@@ -285,7 +285,7 @@ async function handleRekeyAnswer(msg) {
   const peerAnswerPub = await importPeerPublic(peerAnswerPubBytes);
   const salt = b64ToBytes(msg.salt);
 
-  state.rootKeyBytes = await deriveRootFromECDH(state.pendingRekeyOffer.privateKey, peerAnswerPub, salt);
+  state.rootKey = await deriveRootFromECDH(state.pendingRekeyOffer.privateKey, peerAnswerPub, salt);
   state.myStaticKeyPair = state.pendingRekeyOffer;
   state.myStaticPublicBytes = await exportRawPublic(state.myStaticKeyPair.publicKey);
   state.peerStaticPublicBytes = peerAnswerPubBytes;
@@ -316,10 +316,7 @@ function closeSession(reason) {
   state.rekeyTimer = null;
 
   // Best-effort zeroization of in-memory secrets.
-  if (state.rootKeyBytes) {
-    state.rootKeyBytes.fill(0);
-  }
-  state.rootKeyBytes = null;
+  state.rootKey = null;
   state.peerStaticPublicKey = null;
   state.peerStaticPublicBytes = null;
   state.myStaticKeyPair = null;
